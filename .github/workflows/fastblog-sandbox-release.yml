@@ -317,6 +317,9 @@ jobs:
           ARCHIVE_OUTCOME: ${{ steps.archive.outcome }}
           ATTEST_OUTCOME: ${{ steps.attest.outcome }}
           PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+          PUBLISH_STATE: ${{ steps.publish.outputs.state }}
+          PUBLISH_REASON: ${{ steps.publish.outputs.reason-code }}
+          PUBLISH_INTENT_ID: ${{ steps.publish.outputs.intent-id }}
           ARCHIVE_SHA256: ${{ steps.archive.outputs.sha256 }}
           ARCHIVE_BYTES: ${{ steps.archive.outputs.size-bytes }}
           ARCHIVE_R2_KEY: ${{ steps.archive.outputs.r2-key }}
@@ -339,10 +342,17 @@ jobs:
           const approvalMatch = summaryText.match(/https:\/\/releases\.emdashcms\.com\/approvals\/[^\s)>\]]+/);
           const connectionMatch = summaryText.match(/https:\/\/releases\.emdashcms\.com\/(?:publisher|approver)[^\s)>\]]*/);
 
-          const approvalUrl = process.env.PUBLISH_APPROVAL_URL || (approvalMatch ? approvalMatch[0] : "");
-          const connectionUrl = process.env.PUBLISH_CONNECTION_URL || (connectionMatch ? connectionMatch[0] : "");
+          const approvalUrl = String(process.env.PUBLISH_APPROVAL_URL || (approvalMatch ? approvalMatch[0] : "")).trim();
+          const connectionUrl = String(process.env.PUBLISH_CONNECTION_URL || (connectionMatch ? connectionMatch[0] : "")).trim();
+          const publishState = String(process.env.PUBLISH_STATE || "").trim();
+          const publishIntentId = String(process.env.PUBLISH_INTENT_ID || "").trim();
+          const publishReason = String(process.env.PUBLISH_REASON || "").trim();
           const published = process.env.PUBLISH_OUTCOME === "success";
-          const awaitingApproval = !published && Boolean(approvalUrl || connectionUrl);
+          const awaitingApproval =
+            !published &&
+            (publishState === "awaiting_approval" ||
+              Boolean(approvalUrl) ||
+              (Boolean(connectionUrl) && !publishIntentId));
           const status = published ? "published" : awaitingApproval ? "awaiting_approval" : "failed";
 
           const outcomes = [
@@ -354,9 +364,14 @@ jobs:
             ["publish", process.env.PUBLISH_OUTCOME],
           ];
           const failedSteps = outcomes.filter(([, v]) => v === "failure" || v === "cancelled").map(([k, v]) => `${k}:${v}`);
+          const detailParts = [
+            publishIntentId ? `intent=${publishIntentId}` : "",
+            publishState ? `state=${publishState}` : "",
+            publishReason ? `reason=${publishReason}` : "",
+          ].filter(Boolean);
           const failureReason = failedSteps.length > 0
-            ? `Failed step(s): ${failedSteps.join(", ")}`
-            : `EmDash release-action outcome: ${process.env.PUBLISH_OUTCOME}`;
+            ? `Failed step(s): ${failedSteps.join(", ")}${detailParts.length ? ` (${detailParts.join(", ")})` : ""}`
+            : `EmDash release-action outcome: ${process.env.PUBLISH_OUTCOME}${detailParts.length ? ` (${detailParts.join(", ")})` : ""}`;
 
           const primaryBase = String(process.env.CALLBACK_BASE_URL || "").replace(/\/+$/, "");
           const endpoints = Array.from(new Set([primaryBase, "https://fastaiblog.iamot6.workers.dev"].filter(Boolean)));
@@ -372,7 +387,7 @@ jobs:
               ...(process.env.ARCHIVE_BYTES ? { sizeBytes: Number(process.env.ARCHIVE_BYTES) } : {}),
               ...(process.env.ARCHIVE_R2_KEY ? { r2Key: process.env.ARCHIVE_R2_KEY } : {}),
               ...(approvalUrl ? { approvalUrl } : {}),
-              ...(connectionUrl ? { connectionUrl } : {}),
+              ...(awaitingApproval && !publishIntentId && connectionUrl ? { connectionUrl } : {}),
               ...(status === "failed" ? { errorMessage: failureReason } : {}),
             });
             const ts = String(Math.floor(Date.now() / 1000));
