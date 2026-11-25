@@ -62,7 +62,7 @@ jobs:
         shell: bash
         env:
           FASTBLOG_CALLBACK_SECRET: ${{ secrets.FASTBLOG_CALLBACK_SECRET }}
-          CALLBACK_BASE_URL: https://api.fastblog.cc
+          CALLBACK_BASE_URL: https://fastaiblog.iamot6.workers.dev
           PLUGIN_SLUG: ${{ steps.prepare.outputs.package-slug }}
           PLUGIN_VERSION: ${{ steps.prepare.outputs.version }}
           BUNDLE_FILE: ${{ steps.prepare.outputs.bundle-file }}
@@ -72,7 +72,8 @@ jobs:
           import crypto from "node:crypto";
           import fs from "node:fs";
 
-          const baseUrl = process.env.CALLBACK_BASE_URL.replace(/\/+$/, "");
+          const primaryBase = String(process.env.CALLBACK_BASE_URL || "").replace(/\/+$/, "");
+          const endpoints = Array.from(new Set([primaryBase, "https://fastaiblog.iamot6.workers.dev", "https://api.fastblog.cc"].filter(Boolean)));
           const secret = process.env.FASTBLOG_CALLBACK_SECRET;
           if (!secret) {
             console.log("FASTBLOG_CALLBACK_SECRET not configured; skipping R2 archive upload.");
@@ -88,19 +89,33 @@ jobs:
             .update(`${ts}.${slug}.${version}.${sha256}`)
             .digest("hex");
 
-          const res = await fetch(`${baseUrl}/api/sandbox-plugins/archive/${encodeURIComponent(slug)}/${encodeURIComponent(version)}`, {
-            method: "PUT",
-            headers: {
-              "Content-Type": "application/gzip",
-              "X-Archive-Sha256": sha256,
-              "X-Commit-Sha": process.env.GITHUB_SHA || "",
-              "X-FastBlog-Timestamp": ts,
-              "X-FastBlog-Signature": sig,
-            },
-            body: bytes,
-          });
-          if (!res.ok) {
-            throw new Error(`R2 upload failed HTTP ${res.status}: ${await res.text()}`);
+          let uploaded = false;
+          let lastErr = "unknown";
+          for (const baseUrl of endpoints) {
+            try {
+              const res = await fetch(`${baseUrl}/api/sandbox-plugins/archive/${encodeURIComponent(slug)}/${encodeURIComponent(version)}`, {
+                method: "PUT",
+                headers: {
+                  "Content-Type": "application/gzip",
+                  "User-Agent": "FastBlog-GitHub-Actions/1.0",
+                  "X-Archive-Sha256": sha256,
+                  "X-Commit-Sha": process.env.GITHUB_SHA || "",
+                  "X-FastBlog-Timestamp": ts,
+                  "X-FastBlog-Signature": sig,
+                },
+                body: bytes,
+              });
+              if (res.ok) {
+                uploaded = true;
+                break;
+              }
+              lastErr = `${baseUrl} HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`;
+            } catch (err) {
+              lastErr = `${baseUrl} error: ${err.message}`;
+            }
+          }
+          if (!uploaded) {
+            throw new Error(`R2 upload failed (${lastErr})`);
           }
           const out = process.env.GITHUB_OUTPUT;
           if (out) {
@@ -129,7 +144,7 @@ jobs:
         shell: bash
         env:
           FASTBLOG_CALLBACK_SECRET: ${{ secrets.FASTBLOG_CALLBACK_SECRET }}
-          CALLBACK_BASE_URL: https://api.fastblog.cc
+          CALLBACK_BASE_URL: https://fastaiblog.iamot6.workers.dev
           PLUGIN_SLUG: ${{ steps.prepare.outputs.package-slug }}
           PLUGIN_VERSION: ${{ steps.prepare.outputs.version }}
           PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
@@ -141,7 +156,8 @@ jobs:
           node --input-type=module - <<'EOF'
           import crypto from "node:crypto";
 
-          const baseUrl = process.env.CALLBACK_BASE_URL.replace(/\/+$/, "");
+          const primaryBase = String(process.env.CALLBACK_BASE_URL || "").replace(/\/+$/, "");
+          const endpoints = Array.from(new Set([primaryBase, "https://fastaiblog.iamot6.workers.dev", "https://api.fastblog.cc"].filter(Boolean)));
           const secret = process.env.FASTBLOG_CALLBACK_SECRET;
           if (!secret) {
             console.log("FASTBLOG_CALLBACK_SECRET not configured; skipping callback.");
@@ -161,16 +177,22 @@ jobs:
           });
           const ts = String(Math.floor(Date.now() / 1000));
           const sig = crypto.createHmac("sha256", secret).update(`${ts}.${payload}`).digest("hex");
-          const res = await fetch(`${baseUrl}/api/sandbox-plugins/callback`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-FastBlog-Timestamp": ts,
-              "X-FastBlog-Signature": sig,
-            },
-            body: payload,
-          });
-          if (!res.ok) {
-            console.error(`Callback failed HTTP ${res.status}: ${await res.text()}`);
+          for (const baseUrl of endpoints) {
+            try {
+              const res = await fetch(`${baseUrl}/api/sandbox-plugins/callback`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "User-Agent": "FastBlog-GitHub-Actions/1.0",
+                  "X-FastBlog-Timestamp": ts,
+                  "X-FastBlog-Signature": sig,
+                },
+                body: payload,
+              });
+              if (res.ok) break;
+              console.error(`Callback ${baseUrl} HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+            } catch (err) {
+              console.error(`Callback ${baseUrl} error:`, err.message);
+            }
           }
           EOF
