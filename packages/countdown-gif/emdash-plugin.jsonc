@@ -1,0 +1,80 @@
+{
+	"$schema": "../../node_modules/@emdash-cms/plugin-cli/schemas/emdash-plugin.schema.json",
+	"slug": "countdown-gif",
+	"name": "Countdown GIF & Evergreen Timer",
+	"description": "Zero-permission animated GIF89a countdown timers for emails, Evergreen deadline 302 redirects, Block Kit dashboard, and AI MCP tools.",
+	"publisher": "fastblog.cc",
+	"license": "MIT",
+	"author": {
+		"name": "FastBlog Team",
+		"url": "https://fastblog.cc"
+	},
+	"security": {
+		"email": "security@fastblog.cc"
+	},
+	"repo": "https://github.com/isupermantw/fastblog-plugins",
+	"keywords": [
+		"countdown",
+		"gif",
+		"email",
+		"evergreen",
+		"mcp"
+	],
+	"capabilities": [],
+	"allowedHosts": [],
+	"storage": {},
+	"admin": {
+		"pages": [
+			{
+				"path": "/timers",
+				"label": "Countdown GIF",
+				"icon": "timer"
+			}
+		],
+		"settingsSchema": {
+			"defaultStyle": {
+				"type": "select",
+				"label": "Default Timer Theme",
+				"description": "Color palette used when a timer does not override style.",
+				"default": "dark",
+				"options": [
+					{ "value": "dark", "label": "Midnight Dark" },
+					{ "value": "light", "label": "Minimal Light" },
+					{ "value": "red", "label": "Urgent Red" },
+					{ "value": "gold", "label": "VIP Gold" },
+					{ "value": "emerald", "label": "Emerald" }
+				]
+			},
+			"defaultLayout": {
+				"type": "select",
+				"label": "Default Layout",
+				"description": "Card (460x104) or compact Pill (300x56).",
+				"default": "card",
+				"options": [
+					{ "value": "card", "label": "Card (460x104)" },
+					{ "value": "pill", "label": "Pill (300x56)" }
+				]
+			},
+			"defaultExpiredPreset": {
+				"type": "select",
+				"label": "Default Expired Text",
+				"description": "Text rendered inside the GIF when remaining time reaches zero.",
+				"default": "expired_en",
+				"options": [
+					{ "value": "expired_en", "label": "OFFER EXPIRED" },
+					{ "value": "closed_en", "label": "DOORS CLOSED" },
+					{ "value": "ended_en", "label": "DEAL ENDED" },
+					{ "value": "expired_zh", "label": "優惠已截止" },
+					{ "value": "closed_zh", "label": "報名已結束" },
+					{ "value": "ended_zh", "label": "活動已結束" }
+				]
+			},
+			"siteOrigin": {
+				"type": "url",
+				"label": "Public Site Origin",
+				"description": "Base HTTPS origin used to generate copy-ready GIF & redirect URLs (e.g. https://example.com)",
+				"placeholder": "https://example.com"
+			}
+		}
+	}
+}

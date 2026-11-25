@@ -1,0 +1,341 @@
+name: "FastBlog Sandbox Plugin Release"
+
+on:
+  workflow_dispatch:
+    inputs:
+      slug:
+        description: "Plugin folder slug under packages/"
+        required: true
+        type: string
+      bump:
+        description: "SemVer bump type (patch, minor, major, custom)"
+        required: false
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - custom
+      custom_version:
+        description: "Explicit SemVer version when bump=custom"
+        required: false
+        default: ""
+        type: string
+      release_notes:
+        description: "Short release notes"
+        required: false
+        default: ""
+        type: string
+      callback_base_url:
+        description: "FastBlog Control Plane base URL"
+        required: false
+        default: "https://api.fastblog.cc"
+        type: string
+
+permissions:
+  contents: write
+  id-token: write # Required for GitHub OIDC -> EmDash Delegated Releases.
+  attestations: write # Required for Sigstore build provenance.
+
+concurrency:
+  group: fastblog-sandbox-release-${{ inputs.slug }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: "Release ${{ inputs.slug }} (${{ inputs.bump }})"
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Check repository visibility"
+        if: ${{ github.event.repository.visibility != 'public' }}
+        run: |
+          echo "::error title=Public repository required::EmDash Delegated Releases only trust public GitHub repositories."
+          exit 1
+
+      - name: "Check out repository"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: "Set up pnpm"
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - name: "Set up Node.js"
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: "Install dependencies"
+        run: pnpm install --frozen-lockfile
+
+      - name: "Resolve target version & notify building"
+        id: meta
+        shell: bash
+        env:
+          INPUT_SLUG: ${{ inputs.slug }}
+          INPUT_BUMP: ${{ inputs.bump }}
+          INPUT_CUSTOM_VERSION: ${{ inputs.custom_version }}
+          CALLBACK_BASE_URL: ${{ inputs.callback_base_url }}
+          FASTBLOG_CALLBACK_SECRET: ${{ secrets.FASTBLOG_CALLBACK_SECRET }}
+        run: |
+          set -euo pipefail
+          node --input-type=module - <<'EOF'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+          import path from "node:path";
+
+          const slug = String(process.env.INPUT_SLUG || "").trim().toLowerCase();
+          if (!/^[a-z][a-z0-9-]{0,63}$/.test(slug)) {
+            throw new Error(`Invalid slug: ${slug}`);
+          }
+          const pkgPath = path.join("packages", slug, "package.json");
+          if (!fs.existsSync(pkgPath)) {
+            throw new Error(`Package not found: ${pkgPath}`);
+          }
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+          const current = String(pkg.version || "0.1.0").trim();
+          const bump = String(process.env.INPUT_BUMP || "patch").trim().toLowerCase();
+          const custom = String(process.env.INPUT_CUSTOM_VERSION || "").trim();
+
+          let nextVersion = current;
+          if (bump === "custom") {
+            if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(custom)) {
+              throw new Error(`Invalid custom_version: ${custom}`);
+            }
+            nextVersion = custom;
+          } else {
+            const match = current.match(/^(\d+)\.(\d+)\.(\d+)/);
+            if (!match) throw new Error(`Cannot bump non-semver version: ${current}`);
+            let major = Number(match[1]);
+            let minor = Number(match[2]);
+            let patch = Number(match[3]);
+            if (bump === "major") {
+              major += 1;
+              minor = 0;
+              patch = 0;
+            } else if (bump === "minor") {
+              minor += 1;
+              patch = 0;
+            } else {
+              patch += 1;
+            }
+            nextVersion = `${major}.${minor}.${patch}`;
+          }
+
+          let versionChanged = "false";
+          if (nextVersion !== current) {
+            pkg.version = nextVersion;
+            fs.writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`, "utf8");
+            versionChanged = "true";
+          }
+
+          const outFile = process.env.GITHUB_OUTPUT;
+          if (outFile) {
+            fs.appendFileSync(outFile, `slug=${slug}\nversion=${nextVersion}\nversion-changed=${versionChanged}\npackage-dir=packages/${slug}\n`);
+          }
+
+          const secret = process.env.FASTBLOG_CALLBACK_SECRET;
+          const baseUrl = String(process.env.CALLBACK_BASE_URL || "").replace(/\/+$/, "");
+          if (secret && baseUrl) {
+            const payload = JSON.stringify({
+              slug,
+              version: nextVersion,
+              status: "building",
+              runUrl: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+              commitSha: process.env.GITHUB_SHA,
+            });
+            const ts = String(Math.floor(Date.now() / 1000));
+            const sig = crypto.createHmac("sha256", secret).update(`${ts}.${payload}`).digest("hex");
+            await fetch(`${baseUrl}/api/sandbox-plugins/callback`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-FastBlog-Timestamp": ts,
+                "X-FastBlog-Signature": sig,
+              },
+              body: payload,
+            }).catch((err) => console.warn("Building callback warning:", err.message));
+          }
+          EOF
+
+      - name: "Validate, test & build plugin"
+        env:
+          PKG_DIR: ${{ steps.meta.outputs.package-dir }}
+        run: |
+          set -euo pipefail
+          pnpm --filter "./${PKG_DIR}" run typecheck
+          pnpm --filter "./${PKG_DIR}" run validate
+          pnpm --filter "./${PKG_DIR}" run test
+          pnpm --filter "./${PKG_DIR}" run build
+
+      - name: "Commit version bump & tag release"
+        id: git_tag
+        env:
+          PLUGIN_SLUG: ${{ steps.meta.outputs.slug }}
+          PLUGIN_VERSION: ${{ steps.meta.outputs.version }}
+          VERSION_CHANGED: ${{ steps.meta.outputs.version-changed }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+        run: |
+          set -euo pipefail
+          TAG="${PLUGIN_SLUG}@${PLUGIN_VERSION}"
+          if [ "${VERSION_CHANGED}" = "true" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add "packages/${PLUGIN_SLUG}/package.json"
+            git commit -m "chore(${PLUGIN_SLUG}): release ${PLUGIN_VERSION}"
+            git push origin HEAD:main
+          fi
+          if ! git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+            git tag -a "${TAG}" -m "Release ${TAG}${RELEASE_NOTES:+ - }${RELEASE_NOTES}"
+            git push origin "refs/tags/${TAG}"
+          fi
+          echo "commit-sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: "Prepare EmDash release bundle"
+        id: prepare
+        env:
+          EMDASH_RELEASE_SELECTOR: "${{ steps.meta.outputs.slug }}@${{ steps.meta.outputs.version }}"
+        run: |
+          set -euo pipefail
+          pnpm exec emdash-plugin release prepare "${EMDASH_RELEASE_SELECTOR}" --dir . --out-dir .emdash-release
+
+      - name: "Archive bundle tarball to FastBlog R2"
+        id: archive
+        if: ${{ secrets.FASTBLOG_CALLBACK_SECRET != '' }}
+        env:
+          FASTBLOG_CALLBACK_SECRET: ${{ secrets.FASTBLOG_CALLBACK_SECRET }}
+          CALLBACK_BASE_URL: ${{ inputs.callback_base_url }}
+          PLUGIN_SLUG: ${{ steps.prepare.outputs.package-slug }}
+          PLUGIN_VERSION: ${{ steps.prepare.outputs.version }}
+          BUNDLE_FILE: ${{ steps.prepare.outputs.bundle-file }}
+          COMMIT_SHA: ${{ steps.git_tag.outputs.commit-sha }}
+        run: |
+          set -euo pipefail
+          node --input-type=module - <<'EOF'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+
+          const baseUrl = String(process.env.CALLBACK_BASE_URL || "").replace(/\/+$/, "");
+          const secret = process.env.FASTBLOG_CALLBACK_SECRET;
+          const slug = process.env.PLUGIN_SLUG;
+          const version = process.env.PLUGIN_VERSION;
+          const bytes = fs.readFileSync(process.env.BUNDLE_FILE);
+          const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
+          const ts = String(Math.floor(Date.now() / 1000));
+          const sig = crypto
+            .createHmac("sha256", secret)
+            .update(`${ts}.${slug}.${version}.${sha256}`)
+            .digest("hex");
+
+          const res = await fetch(`${baseUrl}/api/sandbox-plugins/archive/${encodeURIComponent(slug)}/${encodeURIComponent(version)}`, {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/gzip",
+              "X-Archive-Sha256": sha256,
+              "X-Commit-Sha": process.env.COMMIT_SHA || process.env.GITHUB_SHA || "",
+              "X-FastBlog-Timestamp": ts,
+              "X-FastBlog-Signature": sig,
+            },
+            body: bytes,
+          });
+          if (!res.ok) {
+            throw new Error(`R2 archive upload failed HTTP ${res.status}: ${await res.text()}`);
+          }
+          const out = process.env.GITHUB_OUTPUT;
+          if (out) {
+            fs.appendFileSync(out, `sha256=${sha256}\nsize-bytes=${bytes.byteLength}\nr2-key=sandbox-releases/${slug}/${slug}-${version}.tar.gz\n`);
+          }
+          EOF
+
+      - name: "Create build provenance"
+        id: attest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: ${{ steps.prepare.outputs.bundle-file }}
+
+      - name: "Publish plugin via EmDash release-action"
+        id: publish
+        continue-on-error: true
+        uses: emdash-cms/emdash/apps/release-action@main
+        with:
+          service-url: https://releases.emdashcms.com
+          publisher-did: ${{ steps.prepare.outputs.publisher-did }}
+          bundle-file: ${{ steps.prepare.outputs.bundle-file }}
+          plugin-directory: ${{ steps.prepare.outputs.plugin-directory }}
+          provenance-file: ${{ steps.attest.outputs.bundle-path }}
+
+      - name: "Report final status to FastBlog Control Plane"
+        if: ${{ always() }}
+        env:
+          FASTBLOG_CALLBACK_SECRET: ${{ secrets.FASTBLOG_CALLBACK_SECRET }}
+          CALLBACK_BASE_URL: ${{ inputs.callback_base_url }}
+          PLUGIN_SLUG: ${{ steps.meta.outputs.slug || inputs.slug }}
+          PLUGIN_VERSION: ${{ steps.meta.outputs.version }}
+          COMMIT_SHA: ${{ steps.git_tag.outputs.commit-sha || github.sha }}
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+          ARCHIVE_SHA256: ${{ steps.archive.outputs.sha256 }}
+          ARCHIVE_BYTES: ${{ steps.archive.outputs.size-bytes }}
+          ARCHIVE_R2_KEY: ${{ steps.archive.outputs.r2-key }}
+          STEP_SUMMARY_PATH: ${{ env.GITHUB_STEP_SUMMARY }}
+          PUBLISH_APPROVAL_URL: ${{ steps.publish.outputs.approval-url }}
+          PUBLISH_CONNECTION_URL: ${{ steps.publish.outputs.connection-url }}
+        run: |
+          set -euo pipefail
+          node --input-type=module - <<'EOF'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+
+          let summaryText = "";
+          try {
+            if (process.env.STEP_SUMMARY_PATH && fs.existsSync(process.env.STEP_SUMMARY_PATH)) {
+              summaryText = fs.readFileSync(process.env.STEP_SUMMARY_PATH, "utf8");
+            }
+          } catch {}
+
+          const approvalMatch = summaryText.match(/https:\/\/releases\.emdashcms\.com\/approvals\/[^\s)>\]]+/);
+          const connectionMatch = summaryText.match(/https:\/\/releases\.emdashcms\.com\/(?:publisher|approver)[^\s)>\]]*/);
+
+          const approvalUrl = process.env.PUBLISH_APPROVAL_URL || (approvalMatch ? approvalMatch[0] : "");
+          const connectionUrl = process.env.PUBLISH_CONNECTION_URL || (connectionMatch ? connectionMatch[0] : "");
+          const published = process.env.PUBLISH_OUTCOME === "success";
+          const awaitingApproval = !published && Boolean(approvalUrl || connectionUrl);
+          const status = published ? "published" : awaitingApproval ? "awaiting_approval" : "failed";
+
+          const baseUrl = String(process.env.CALLBACK_BASE_URL || "").replace(/\/+$/, "");
+          const secret = process.env.FASTBLOG_CALLBACK_SECRET;
+          if (secret && baseUrl) {
+            const payload = JSON.stringify({
+              slug: process.env.PLUGIN_SLUG,
+              version: process.env.PLUGIN_VERSION,
+              status,
+              runUrl: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+              commitSha: process.env.COMMIT_SHA,
+              ...(process.env.ARCHIVE_SHA256 ? { sha256: process.env.ARCHIVE_SHA256 } : {}),
+              ...(process.env.ARCHIVE_BYTES ? { sizeBytes: Number(process.env.ARCHIVE_BYTES) } : {}),
+              ...(process.env.ARCHIVE_R2_KEY ? { r2Key: process.env.ARCHIVE_R2_KEY } : {}),
+              ...(approvalUrl ? { approvalUrl } : {}),
+              ...(connectionUrl ? { connectionUrl } : {}),
+              ...(status === "failed" ? { errorMessage: `EmDash release-action outcome: ${process.env.PUBLISH_OUTCOME}` } : {}),
+            });
+            const ts = String(Math.floor(Date.now() / 1000));
+            const sig = crypto.createHmac("sha256", secret).update(`${ts}.${payload}`).digest("hex");
+            const res = await fetch(`${baseUrl}/api/sandbox-plugins/callback`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-FastBlog-Timestamp": ts,
+                "X-FastBlog-Signature": sig,
+              },
+              body: payload,
+            });
+            if (!res.ok) {
+              console.error(`Final callback failed HTTP ${res.status}: ${await res.text()}`);
+            }
+          }
+
+          if (status === "failed") {
+            process.exit(1);
+          }
+          EOF

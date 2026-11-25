@@ -1,0 +1,7 @@
+node_modules/
+**/dist/
+.emdash-release/
+*.tgz
+*.tar.gz
+.DS_Store
+Thumbs.db

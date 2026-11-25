@@ -1,0 +1,22 @@
+{
+  "name": "fastblog-plugins",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Official public repository of FastBlog sandboxed EmDash CMS plugins.",
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "validate": "pnpm -r validate",
+    "bundle": "pnpm -r bundle"
+  },
+  "devDependencies": {
+    "@emdash-cms/blocks": "^1.6.0",
+    "@emdash-cms/plugin-cli": "^0.13.7",
+    "@emdash-cms/plugin-types": "^0.6.1",
+    "emdash": "^1.5.0",
+    "typescript": "^5.8.2",
+    "zod": "^4.0.0"
+  }
+}

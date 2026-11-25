@@ -1,0 +1,169 @@
+name: "Publish EmDash plugins"
+
+on:
+  push:
+    tags:
+      - "*@*"
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Plugin ID or <slug>@<version> to publish"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # Required for the audience-bound GitHub OIDC token.
+  attestations: write # Required to sign build provenance.
+
+concurrency:
+  group: emdash-release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: "Build and publish plugin"
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Check repository visibility"
+        if: ${{ github.event.repository.visibility != 'public' }}
+        run: |
+          echo "::error title=Public repository required::EmDash releases currently require a public GitHub repository because private and internal repository attestations cannot yet be verified."
+          exit 1
+
+      - name: "Check out repository"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: "Set up pnpm"
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - name: "Set up Node.js"
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: "Install dependencies"
+        run: pnpm install --frozen-lockfile
+
+      - name: "Prepare plugin release"
+        id: prepare
+        shell: bash
+        env:
+          EMDASH_RELEASE_SELECTOR: ${{ inputs.package || github.ref_name }}
+        run: |
+          set -euo pipefail
+          pnpm exec emdash-plugin release prepare "${EMDASH_RELEASE_SELECTOR}" --dir . --out-dir .emdash-release
+
+      - name: "Upload archive to FastBlog R2 (optional)"
+        if: ${{ secrets.FASTBLOG_CALLBACK_SECRET != '' }}
+        id: archive
+        shell: bash
+        env:
+          FASTBLOG_CALLBACK_SECRET: ${{ secrets.FASTBLOG_CALLBACK_SECRET }}
+          CALLBACK_BASE_URL: https://api.fastblog.cc
+          PLUGIN_SLUG: ${{ steps.prepare.outputs.package-slug }}
+          PLUGIN_VERSION: ${{ steps.prepare.outputs.version }}
+          BUNDLE_FILE: ${{ steps.prepare.outputs.bundle-file }}
+        run: |
+          set -euo pipefail
+          node --input-type=module - <<'EOF'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+
+          const baseUrl = process.env.CALLBACK_BASE_URL.replace(/\/+$/, "");
+          const secret = process.env.FASTBLOG_CALLBACK_SECRET;
+          const slug = process.env.PLUGIN_SLUG;
+          const version = process.env.PLUGIN_VERSION;
+          const bytes = fs.readFileSync(process.env.BUNDLE_FILE);
+          const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
+          const ts = String(Math.floor(Date.now() / 1000));
+          const sig = crypto
+            .createHmac("sha256", secret)
+            .update(`${ts}.${slug}.${version}.${sha256}`)
+            .digest("hex");
+
+          const res = await fetch(`${baseUrl}/api/sandbox-plugins/archive/${encodeURIComponent(slug)}/${encodeURIComponent(version)}`, {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/gzip",
+              "X-Archive-Sha256": sha256,
+              "X-Commit-Sha": process.env.GITHUB_SHA || "",
+              "X-FastBlog-Timestamp": ts,
+              "X-FastBlog-Signature": sig,
+            },
+            body: bytes,
+          });
+          if (!res.ok) {
+            throw new Error(`R2 upload failed HTTP ${res.status}: ${await res.text()}`);
+          }
+          const out = process.env.GITHUB_OUTPUT;
+          if (out) {
+            fs.appendFileSync(out, `sha256=${sha256}\nsize-bytes=${bytes.byteLength}\nr2-key=sandbox-releases/${slug}/${slug}-${version}.tar.gz\n`);
+          }
+          EOF
+
+      - name: "Create build provenance"
+        id: attest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: ${{ steps.prepare.outputs.bundle-file }}
+
+      - name: "Publish plugin"
+        id: publish
+        uses: emdash-cms/emdash/apps/release-action@main
+        with:
+          service-url: https://releases.emdashcms.com
+          publisher-did: ${{ steps.prepare.outputs.publisher-did }}
+          bundle-file: ${{ steps.prepare.outputs.bundle-file }}
+          plugin-directory: ${{ steps.prepare.outputs.plugin-directory }}
+          provenance-file: ${{ steps.attest.outputs.bundle-path }}
+
+      - name: "Notify FastBlog Control Plane (optional)"
+        if: ${{ always() && secrets.FASTBLOG_CALLBACK_SECRET != '' && steps.prepare.outputs.package-slug != '' }}
+        shell: bash
+        env:
+          FASTBLOG_CALLBACK_SECRET: ${{ secrets.FASTBLOG_CALLBACK_SECRET }}
+          CALLBACK_BASE_URL: https://api.fastblog.cc
+          PLUGIN_SLUG: ${{ steps.prepare.outputs.package-slug }}
+          PLUGIN_VERSION: ${{ steps.prepare.outputs.version }}
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+          ARCHIVE_SHA256: ${{ steps.archive.outputs.sha256 }}
+          ARCHIVE_BYTES: ${{ steps.archive.outputs.size-bytes }}
+          ARCHIVE_R2_KEY: ${{ steps.archive.outputs.r2-key }}
+        run: |
+          set -euo pipefail
+          node --input-type=module - <<'EOF'
+          import crypto from "node:crypto";
+
+          const baseUrl = process.env.CALLBACK_BASE_URL.replace(/\/+$/, "");
+          const secret = process.env.FASTBLOG_CALLBACK_SECRET;
+          const ok = process.env.PUBLISH_OUTCOME === "success";
+          const payload = JSON.stringify({
+            slug: process.env.PLUGIN_SLUG,
+            version: process.env.PLUGIN_VERSION,
+            status: ok ? "published" : "failed",
+            runUrl: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+            commitSha: process.env.GITHUB_SHA,
+            ...(process.env.ARCHIVE_SHA256 ? { sha256: process.env.ARCHIVE_SHA256 } : {}),
+            ...(process.env.ARCHIVE_BYTES ? { sizeBytes: Number(process.env.ARCHIVE_BYTES) } : {}),
+            ...(process.env.ARCHIVE_R2_KEY ? { r2Key: process.env.ARCHIVE_R2_KEY } : {}),
+            ...(ok ? {} : { errorMessage: `EmDash release-action outcome: ${process.env.PUBLISH_OUTCOME}` }),
+          });
+          const ts = String(Math.floor(Date.now() / 1000));
+          const sig = crypto.createHmac("sha256", secret).update(`${ts}.${payload}`).digest("hex");
+          const res = await fetch(`${baseUrl}/api/sandbox-plugins/callback`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-FastBlog-Timestamp": ts,
+              "X-FastBlog-Signature": sig,
+            },
+            body: payload,
+          });
+          if (!res.ok) {
+            console.error(`Callback failed HTTP ${res.status}: ${await res.text()}`);
+          }
+          EOF
