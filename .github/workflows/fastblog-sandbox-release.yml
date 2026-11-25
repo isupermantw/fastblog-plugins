@@ -203,7 +203,6 @@ jobs:
 
       - name: "Archive bundle tarball to FastBlog R2"
         id: archive
-        if: ${{ secrets.FASTBLOG_CALLBACK_SECRET != '' }}
         env:
           FASTBLOG_CALLBACK_SECRET: ${{ secrets.FASTBLOG_CALLBACK_SECRET }}
           CALLBACK_BASE_URL: ${{ inputs.callback_base_url }}
@@ -219,6 +218,10 @@ jobs:
 
           const baseUrl = String(process.env.CALLBACK_BASE_URL || "").replace(/\/+$/, "");
           const secret = process.env.FASTBLOG_CALLBACK_SECRET;
+          if (!secret || !baseUrl) {
+            console.log("FASTBLOG_CALLBACK_SECRET not configured; skipping R2 archive upload.");
+            process.exit(0);
+          }
           const slug = process.env.PLUGIN_SLUG;
           const version = process.env.PLUGIN_VERSION;
           const bytes = fs.readFileSync(process.env.BUNDLE_FILE);

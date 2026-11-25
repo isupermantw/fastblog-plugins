@@ -58,7 +58,6 @@ jobs:
           pnpm exec emdash-plugin release prepare "${EMDASH_RELEASE_SELECTOR}" --dir . --out-dir .emdash-release
 
       - name: "Upload archive to FastBlog R2 (optional)"
-        if: ${{ secrets.FASTBLOG_CALLBACK_SECRET != '' }}
         id: archive
         shell: bash
         env:
@@ -75,6 +74,10 @@ jobs:
 
           const baseUrl = process.env.CALLBACK_BASE_URL.replace(/\/+$/, "");
           const secret = process.env.FASTBLOG_CALLBACK_SECRET;
+          if (!secret) {
+            console.log("FASTBLOG_CALLBACK_SECRET not configured; skipping R2 archive upload.");
+            process.exit(0);
+          }
           const slug = process.env.PLUGIN_SLUG;
           const version = process.env.PLUGIN_VERSION;
           const bytes = fs.readFileSync(process.env.BUNDLE_FILE);
@@ -122,7 +125,7 @@ jobs:
           provenance-file: ${{ steps.attest.outputs.bundle-path }}
 
       - name: "Notify FastBlog Control Plane (optional)"
-        if: ${{ always() && secrets.FASTBLOG_CALLBACK_SECRET != '' && steps.prepare.outputs.package-slug != '' }}
+        if: ${{ always() && steps.prepare.outputs.package-slug != '' }}
         shell: bash
         env:
           FASTBLOG_CALLBACK_SECRET: ${{ secrets.FASTBLOG_CALLBACK_SECRET }}
@@ -140,6 +143,10 @@ jobs:
 
           const baseUrl = process.env.CALLBACK_BASE_URL.replace(/\/+$/, "");
           const secret = process.env.FASTBLOG_CALLBACK_SECRET;
+          if (!secret) {
+            console.log("FASTBLOG_CALLBACK_SECRET not configured; skipping callback.");
+            process.exit(0);
+          }
           const ok = process.env.PUBLISH_OUTCOME === "success";
           const payload = JSON.stringify({
             slug: process.env.PLUGIN_SLUG,
