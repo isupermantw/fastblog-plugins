@@ -57,6 +57,36 @@ jobs:
           set -euo pipefail
           pnpm exec emdash-plugin release prepare "${EMDASH_RELEASE_SELECTOR}" --dir . --out-dir .emdash-release
 
+      - name: "Check publisher ATProto repo size (< 4.5 MB)"
+        shell: bash
+        env:
+          PUBLISHER_DID: ${{ steps.prepare.outputs.publisher-did }}
+        run: |
+          set -euo pipefail
+          node --input-type=module - <<'EOF'
+          const did = String(process.env.PUBLISHER_DID || "").trim();
+          const docRes = await fetch(`https://plc.directory/${encodeURIComponent(did)}`);
+          if (!docRes.ok) throw new Error(`Failed resolving DID document ${did}: HTTP ${docRes.status}`);
+          const doc = await docRes.json();
+          const pds = (doc.service || []).find((s) => s.id === "#atproto_pds")?.serviceEndpoint;
+          if (!pds) throw new Error(`No #atproto_pds endpoint found in DID document ${did}`);
+          const repoRes = await fetch(`${pds.replace(/\/+$/, "")}/xrpc/com.atproto.sync.getRepo?did=${encodeURIComponent(did)}`);
+          if (!repoRes.ok || !repoRes.body) throw new Error(`getRepo failed: HTTP ${repoRes.status}`);
+          const reader = repoRes.body.getReader();
+          const SAFE_LIMIT = 4718592; // 4.5 MB safety margin under EmDash 5 MB limit
+          let total = 0;
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            total += value.byteLength;
+            if (total > SAFE_LIMIT) {
+              await reader.cancel();
+              throw new Error(`Publisher DID ${did} ATProto repo CAR exceeds 4.5 MB (${(total / 1024 / 1024).toFixed(2)} MB). EmDash release-service enforces a 5 MB limit; switch to a clean dedicated publisher DID.`);
+            }
+          }
+          console.log(`Publisher ${did} ATProto repo CAR size OK: ${total} bytes (${(total / 1024).toFixed(2)} KB)`);
+          EOF
+
       - name: "Upload archive to FastBlog R2 (optional)"
         id: archive
         shell: bash

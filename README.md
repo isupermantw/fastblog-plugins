@@ -12,10 +12,11 @@ Public monorepo of lightweight, capability-scoped [EmDash CMS](https://emdashcms
    ```bash
    pnpm install
    ```
-2. Log in with your Atmosphere (Bluesky / custom domain) publisher account:
+2. Log in with your **clean, dedicated** Atmosphere (Bluesky / custom domain) publisher account (`isupermantw1.bsky.social`, DID `did:plc:776f7xdpfb7dj5ti2l3au3ga`):
+   > ⚠️ Never publish from an active Bluesky social account whose `com.atproto.sync.getRepo` CAR export exceeds **4.5 MB** (`DEFAULT_DIRECT_PDS_MAX_RESPONSE_BYTES = 5 MB` in `@emdash-cms/registry-client`). Keep the publisher account strictly for plugin profile & release records.
    ```bash
    cd packages/countdown-gif
-   pnpm exec emdash-plugin login fastblog.cc
+   pnpm exec emdash-plugin login isupermantw1.bsky.social
    pnpm exec emdash-plugin whoami
    ```
 3. Register the signed package profile on your PDS:
