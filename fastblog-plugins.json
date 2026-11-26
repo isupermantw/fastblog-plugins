@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "packages": [
-    "countdown-gif"
+    "countdown-gif",
+    "fastblog-i18n-byok"
   ]
 }

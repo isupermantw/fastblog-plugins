@@ -3,6 +3,7 @@ import {
 	pluginRoute,
 	type PluginContext,
 	type SandboxedPlugin,
+	type SandboxedRouteContext,
 } from "emdash/plugin";
 import {
 	blocks,
@@ -13,6 +14,16 @@ import {
 	type TableColumn,
 } from "@emdash-cms/blocks/server";
 import { z } from "zod";
+import {
+	buildGuideKitBlocks,
+	buildLocaleSwitcherMenu,
+	formatUiTemplate,
+	handleGuideKitAction,
+	loadGuideKitState,
+	resolveSandboxUiLocale,
+	UI_LOCALE_LABELS,
+} from "../../../shared/block-guide-kit.js";
+import { COUNTDOWN_MESSAGES, type CountdownMsgKey } from "./i18n-messages.js";
 import {
 	DEADLINE_EXPIRED_PRESETS,
 	DEADLINE_GIF_PALETTES,
@@ -289,53 +300,136 @@ async function generateSignedEmbedForTimer(
 }
 
 async function renderAdminDashboard(
+	routeCtx: Pick<SandboxedRouteContext, "ui"> | undefined,
 	ctx: PluginContext,
 	toast?: BlockResponse["toast"],
 	selectedTimerId?: string | null,
 ): Promise<BlockResponse> {
-	const timers = await listTimers(ctx);
-	const defaults = await getDefaultsFromSettings(ctx);
+	const [timers, defaults, uiLocale, guideState] = await Promise.all([
+		listTimers(ctx),
+		getDefaultsFromSettings(ctx),
+		resolveSandboxUiLocale(routeCtx, ctx),
+		loadGuideKitState(ctx),
+	]);
+	const dict = COUNTDOWN_MESSAGES[uiLocale];
+	const t = (key: CountdownMsgKey, vars?: Record<string, string | number>) =>
+		formatUiTemplate(dict[key], vars);
+
 	const targetPreviewId =
 		selectedTimerId ?? (await ctx.kv.get<string>(KV_LAST_PREVIEW_ID_KEY)) ?? timers[0]?.id ?? null;
 	const selectedTimer = targetPreviewId
-		? timers.find((t) => t.id === targetPreviewId) ?? timers[0] ?? null
+		? timers.find((tItem) => tItem.id === targetPreviewId) ?? timers[0] ?? null
 		: null;
 
 	const screenBlocks: Block[] = [
-		blocks.header("Countdown GIF & Evergreen Timer"),
-		blocks.section(
-			"Create zero-permission animated GIF89a countdown timers for newsletters and Evergreen deadline 302 redirects.",
-			{
-				accessory: elements.link("Settings", { kind: "plugin-settings" }, { appearance: "secondary" }),
-			},
-		),
+		blocks.header(t("headerTitle")),
+		blocks.section(t("headerDesc"), {
+			accessory: buildLocaleSwitcherMenu(uiLocale, t("languageMenu")),
+		}),
+		blocks.actions([
+			elements.button(
+				"guide_start",
+				guideState.activeStep > 0 ? t("replayTourBtn") : t("startTourBtn"),
+				{ style: "secondary" },
+			),
+			elements.link(t("settingsBtn"), { kind: "plugin-settings" }, { appearance: "secondary" }),
+		]),
 		blocks.stats([
 			{
-				label: "Saved Timers",
+				label: t("statSavedLabel"),
 				value: timers.length,
-				description: "Stored privately in plugin KV",
+				description: t("statSavedDesc"),
 			},
 			{
-				label: "Fixed Deadline",
-				value: timers.filter((t) => t.mode === "fixed").length,
-				description: "Shared end timestamp",
+				label: t("statFixedLabel"),
+				value: timers.filter((tItem) => tItem.mode === "fixed").length,
+				description: t("statFixedDesc"),
 			},
 			{
-				label: "Evergreen",
-				value: timers.filter((t) => t.mode === "evergreen").length,
-				description: "Per-recipient window + 302 redirect",
+				label: t("statEvergreenLabel"),
+				value: timers.filter((tItem) => tItem.mode === "evergreen").length,
+				description: t("statEvergreenDesc"),
 			},
 		]),
+		...buildGuideKitBlocks({
+			activeStep: guideState.activeStep,
+			checklistCollapsed: guideState.checklistCollapsed,
+			checklist: [
+				{
+					done: Boolean(defaults.siteOrigin),
+					label: t("chkOriginTitle"),
+					detail: defaults.siteOrigin
+						? t("chkOriginDone", { origin: defaults.siteOrigin })
+						: t("chkOriginTodo"),
+				},
+				{
+					done: timers.length > 0,
+					label: t("chkTimerTitle"),
+					detail: timers.length > 0
+						? t("chkTimerDone", { count: timers.length })
+						: t("chkTimerTodo"),
+				},
+				{
+					done: Boolean(selectedTimer),
+					label: t("chkEmbedTitle"),
+					detail: selectedTimer
+						? t("chkEmbedDone", { id: selectedTimer.id })
+						: t("chkEmbedTodo"),
+				},
+			],
+			steps: [
+				{ title: t("step1Title"), description: t("step1Desc") },
+				{ title: t("step2Title"), description: t("step2Desc") },
+				{ title: t("step3Title"), description: t("step3Desc") },
+				{ title: t("step4Title"), description: t("step4Desc") },
+			],
+			faq: [
+				{ q: t("faq1Q"), a: t("faq1A") },
+				{ q: t("faq2Q"), a: t("faq2A") },
+				{ q: t("faq3Q"), a: t("faq3A") },
+			],
+			labels: {
+				checklistTitle: t("checklistTitle"),
+				progressLabel: t("progressLabel"),
+				tourButtonLabel: t("startTourBtn"),
+				replayButtonLabel: t("replayTourBtn"),
+				stepBadgePrefix: t("stepBadgePrefix"),
+				prevLabel: t("prevBtn"),
+				nextLabel: t("nextBtn"),
+				finishLabel: t("finishBtn"),
+				closeLabel: t("closeBtn"),
+				faqTitle: t("faqTitle"),
+			},
+		}),
 		blocks.divider(),
 	];
+
+	if (timers.length === 0) {
+		screenBlocks.push(
+			blocks.empty({
+				blockId: "countdown_empty_state",
+				title: t("emptyTitle"),
+				description: t("emptyDesc"),
+				size: "base",
+				actions: [
+					elements.button("create_demo_timer", t("emptyCreateDemoBtn"), { style: "primary" }),
+				],
+			}),
+			blocks.divider(),
+		);
+	}
 
 	if (selectedTimer) {
 		const preview = await generateSignedEmbedForTimer(ctx, selectedTimer);
 		screenBlocks.push(
 			blocks.banner({
 				variant: "default",
-				title: `Embed Ready: ${selectedTimer.name} (${selectedTimer.id})`,
-				description: `Deadline preview: ${preview.deadlineIso} | Active -> ${selectedTimer.activeUrl} | Expired -> ${selectedTimer.expiredUrl}`,
+				title: t("embedReadyTitle", { name: selectedTimer.name, id: selectedTimer.id }),
+				description: t("embedReadyDesc", {
+					deadlineIso: preview.deadlineIso,
+					activeUrl: selectedTimer.activeUrl,
+					expiredUrl: selectedTimer.expiredUrl,
+				}),
 			}),
 			blocks.code({
 				code: `<!-- Email HTML (<img src> + Evergreen 302 link) -->\n${preview.linkedHtml}\n\n# Direct GIF URL\n${preview.gifUrl}\n\n# Evergreen Redirect URL\n${preview.redirectUrl}`,
@@ -346,61 +440,61 @@ async function renderAdminDashboard(
 
 	const defaultFutureIso = new Date(Date.now() + 72 * 3600 * 1000).toISOString().slice(0, 19) + "Z";
 	screenBlocks.push(
-		blocks.header("Create or Update Timer"),
+		blocks.header(t("formHeader")),
 		blocks.form({
 			blockId: "create_timer_form",
 			fields: [
-				elements.textInput("name", "Campaign Name", {
-					placeholder: "Black Friday Flash Sale",
+				elements.textInput("name", t("fieldName"), {
+					placeholder: t("fieldNamePh"),
 				}),
 				elements.select(
 					"mode",
-					"Timer Mode",
+					t("fieldMode"),
 					[
-						{ value: "fixed", label: "Fixed Deadline (ISO / Unix)" },
-						{ value: "evergreen", label: "Evergreen (Minutes from generation)" },
+						{ value: "fixed", label: t("modeFixed") },
+						{ value: "evergreen", label: t("modeEvergreen") },
 					],
 					{ initialValue: "fixed" },
 				),
-				elements.textInput("endAt", "Fixed End Time (UTC ISO or Unix seconds)", {
+				elements.textInput("endAt", t("fieldEndAt"), {
 					initialValue: defaultFutureIso,
 					placeholder: "2026-12-31T23:59:59Z",
 				}),
-				elements.numberInput("durationMinutes", "Evergreen Duration (minutes)", {
+				elements.numberInput("durationMinutes", t("fieldDuration"), {
 					initialValue: 1440,
 					min: 1,
 					max: 525600,
 				}),
-				elements.textInput("activeUrl", "Active Offer URL (before deadline)", {
+				elements.textInput("activeUrl", t("fieldActiveUrl"), {
 					placeholder: "https://example.com/offer",
 				}),
-				elements.textInput("expiredUrl", "Expired Redirect URL (after deadline)", {
+				elements.textInput("expiredUrl", t("fieldExpiredUrl"), {
 					placeholder: "https://example.com/offer-ended",
 				}),
 				elements.select(
 					"style",
-					"Theme Style",
+					t("fieldStyle"),
 					[
-						{ value: "dark", label: "Midnight Dark" },
-						{ value: "light", label: "Minimal Light" },
-						{ value: "red", label: "Urgent Red" },
-						{ value: "gold", label: "VIP Gold" },
-						{ value: "emerald", label: "Emerald" },
+						{ value: "dark", label: t("styleDark") },
+						{ value: "light", label: t("styleLight") },
+						{ value: "red", label: t("styleRed") },
+						{ value: "gold", label: t("styleGold") },
+						{ value: "emerald", label: t("styleEmerald") },
 					],
 					{ initialValue: defaults.style },
 				),
 				elements.select(
 					"layout",
-					"GIF Layout",
+					t("fieldLayout"),
 					[
-						{ value: "card", label: "Card (460x104)" },
-						{ value: "pill", label: "Pill (300x56)" },
+						{ value: "card", label: t("layoutCard") },
+						{ value: "pill", label: t("layoutPill") },
 					],
 					{ initialValue: defaults.layout },
 				),
 				elements.select(
 					"expiredPreset",
-					"Expired Frame Text",
+					t("fieldExpiredPreset"),
 					[
 						{ value: "expired_en", label: "OFFER EXPIRED" },
 						{ value: "closed_en", label: "DOORS CLOSED" },
@@ -413,41 +507,41 @@ async function renderAdminDashboard(
 				),
 			],
 			submit: {
-				label: "Save & Generate Signed GIF URL",
+				label: t("formSubmit"),
 				actionId: "create_timer",
 			},
 		}),
 		blocks.divider(),
-		blocks.header("Saved Timers"),
+		blocks.header(t("savedHeader")),
 	);
 
 	const columns: TableColumn[] = [
-		{ key: "name", label: "Name" },
-		{ key: "mode", label: "Mode", format: "badge" },
-		{ key: "style", label: "Style", format: "badge" },
-		{ key: "target", label: "Schedule / Duration" },
-		{ key: "previewBtn", label: "Embed", format: "element" },
-		{ key: "deleteBtn", label: "Delete", format: "element" },
+		{ key: "name", label: t("colName") },
+		{ key: "mode", label: t("colMode"), format: "badge" },
+		{ key: "style", label: t("colStyle"), format: "badge" },
+		{ key: "target", label: t("colTarget") },
+		{ key: "previewBtn", label: t("colEmbed"), format: "element" },
+		{ key: "deleteBtn", label: t("colDelete"), format: "element" },
 	];
 
-	const rows = timers.map((t) => ({
-		id: t.id,
-		name: `${t.name} (${t.id})`,
-		mode: t.mode,
-		style: `${t.style}/${t.layout}`,
-		target: t.mode === "fixed" ? t.endAt || "-" : `${t.durationMinutes || 60} min`,
-		previewBtn: elements.button("preview_timer", "Get Embed", {
+	const rows = timers.map((timerRow) => ({
+		id: timerRow.id,
+		name: `${timerRow.name} (${timerRow.id})`,
+		mode: timerRow.mode,
+		style: `${timerRow.style}/${timerRow.layout}`,
+		target: timerRow.mode === "fixed" ? timerRow.endAt || "-" : `${timerRow.durationMinutes || 60} min`,
+		previewBtn: elements.button("preview_timer", t("btnGetEmbed"), {
 			style: "secondary",
-			value: t.id,
+			value: timerRow.id,
 		}),
-		deleteBtn: elements.button("delete_timer", "Delete", {
+		deleteBtn: elements.button("delete_timer", t("btnDelete"), {
 			style: "danger",
-			value: t.id,
+			value: timerRow.id,
 			confirm: {
-				title: "Delete Timer?",
-				text: `Delete "${t.name}"? Existing emails linking to its id will return 404 for 302 redirects.`,
-				confirm: "Delete",
-				deny: "Cancel",
+				title: t("confirmDeleteTitle"),
+				text: t("confirmDeleteText", { name: timerRow.name }),
+				confirm: t("confirmDeleteOk"),
+				deny: t("confirmDeleteCancel"),
 				style: "danger",
 			},
 		}),
@@ -459,9 +553,9 @@ async function renderAdminDashboard(
 			columns,
 			rows,
 			pageActionId: "timers_page",
-			emptyText: "No timers created yet. Use the form above to generate your first countdown GIF.",
+			emptyText: t("tableEmpty"),
 		}),
-		blocks.context("Signed with HMAC-SHA256. Zero external hosts, zero database writes, 0 capabilities required."),
+		blocks.context(t("footerNote")),
 	);
 
 	return {
@@ -653,20 +747,74 @@ const plugin: SandboxedPlugin = {
 			handler: async (routeCtx, ctx) => {
 				const interaction = (routeCtx.input ?? { type: "page_load", page: "/timers" }) as BlockInteraction;
 
+				const guideResult = await handleGuideKitAction(interaction, ctx, 4);
+				if (guideResult.handled) {
+					const loc = await resolveSandboxUiLocale(routeCtx, ctx);
+					const t = (key: CountdownMsgKey, vars?: Record<string, string | number>) =>
+						formatUiTemplate(COUNTDOWN_MESSAGES[loc][key], vars);
+					let toast: BlockResponse["toast"] | undefined;
+					if (guideResult.localeChangedTo) {
+						toast = {
+							message: t("toastLocaleChanged", {
+								locale: UI_LOCALE_LABELS[guideResult.localeChangedTo],
+							}),
+							type: "success",
+						};
+					} else if (guideResult.guideCompleted) {
+						toast = { message: t("toastGuideFinished"), type: "success" };
+					}
+					return renderAdminDashboard(routeCtx, ctx, toast);
+				}
+
+				const uiLocale = await resolveSandboxUiLocale(routeCtx, ctx);
+				const t = (key: CountdownMsgKey, vars?: Record<string, string | number>) =>
+					formatUiTemplate(COUNTDOWN_MESSAGES[uiLocale][key], vars);
+
+				if (interaction.type === "block_action" && interaction.action_id === "create_demo_timer") {
+					const defaults = await getDefaultsFromSettings(ctx);
+					const baseOrigin = parseSafeRedirectUrl(defaults.siteOrigin || ctx.site.url) || "https://example.com";
+					const cleanOrigin = baseOrigin.replace(/\/+$/, "");
+					const id = "demo-launch-72h";
+					const nowIso = new Date().toISOString();
+					const endAtIso = new Date(Date.now() + 72 * 3600 * 1000).toISOString();
+					const demoName = t("fieldNamePh");
+					const demoRecord: TimerRecord = {
+						id,
+						name: demoName,
+						mode: "fixed",
+						endAt: endAtIso,
+						activeUrl: `${cleanOrigin}/offer`,
+						expiredUrl: `${cleanOrigin}/expired`,
+						style: defaults.style,
+						layout: defaults.layout,
+						expiredPreset: defaults.expiredPreset,
+						createdAt: nowIso,
+						updatedAt: nowIso,
+					};
+					await ctx.kv.set(`${KV_TIMER_PREFIX}${id}`, demoRecord);
+					await ctx.kv.set(KV_LAST_PREVIEW_ID_KEY, id);
+					return renderAdminDashboard(
+						routeCtx,
+						ctx,
+						{ message: t("toastDemoCreated", { name: demoName }), type: "success" },
+						id,
+					);
+				}
+
 				if (interaction.type === "form_submit" && interaction.action_id === "create_timer") {
 					const vals = interaction.values ?? {};
 					const name = String(vals.name || "").trim();
 					const activeUrl = parseSafeRedirectUrl(vals.activeUrl);
 					const expiredUrl = parseSafeRedirectUrl(vals.expiredUrl);
 					if (!name) {
-						return renderAdminDashboard(ctx, {
-							message: "Campaign name is required.",
+						return renderAdminDashboard(routeCtx, ctx, {
+							message: t("toastNameRequired"),
 							type: "error",
 						});
 					}
 					if (!activeUrl || !expiredUrl) {
-						return renderAdminDashboard(ctx, {
-							message: "Active Offer URL and Expired Redirect URL must be valid http(s) URLs.",
+						return renderAdminDashboard(routeCtx, ctx, {
+							message: t("toastUrlInvalid"),
 							type: "error",
 						});
 					}
@@ -682,8 +830,8 @@ const plugin: SandboxedPlugin = {
 					if (mode === "fixed") {
 						const endUnix = parseDeadlineUnix(vals.endAt);
 						if (!endUnix) {
-							return renderAdminDashboard(ctx, {
-								message: "Fixed deadline must be a valid ISO timestamp or Unix seconds.",
+							return renderAdminDashboard(routeCtx, ctx, {
+								message: t("toastFixedTimeInvalid"),
 								type: "error",
 							});
 						}
@@ -711,8 +859,9 @@ const plugin: SandboxedPlugin = {
 					await ctx.kv.set(`${KV_TIMER_PREFIX}${id}`, record);
 					await ctx.kv.set(KV_LAST_PREVIEW_ID_KEY, id);
 					return renderAdminDashboard(
+						routeCtx,
 						ctx,
-						{ message: `Saved timer "${name}" (${id}). Signed HTML is ready above.`, type: "success" },
+						{ message: t("toastSaved", { name, id }), type: "success" },
 						id,
 					);
 				}
@@ -720,7 +869,7 @@ const plugin: SandboxedPlugin = {
 				if (interaction.type === "block_action" && interaction.action_id === "preview_timer") {
 					const targetId = String(interaction.value || "").trim();
 					if (targetId) await ctx.kv.set(KV_LAST_PREVIEW_ID_KEY, targetId);
-					return renderAdminDashboard(ctx, undefined, targetId || null);
+					return renderAdminDashboard(routeCtx, ctx, undefined, targetId || null);
 				}
 
 				if (interaction.type === "block_action" && interaction.action_id === "delete_timer") {
@@ -731,14 +880,14 @@ const plugin: SandboxedPlugin = {
 						if (currentPreview === targetId) {
 							await ctx.kv.delete(KV_LAST_PREVIEW_ID_KEY);
 						}
-						return renderAdminDashboard(ctx, {
-							message: `Deleted timer "${targetId}".`,
+						return renderAdminDashboard(routeCtx, ctx, {
+							message: t("toastDeleted", { id: targetId }),
 							type: "info",
 						});
 					}
 				}
 
-				return renderAdminDashboard(ctx);
+				return renderAdminDashboard(routeCtx, ctx);
 			},
 		}),
 

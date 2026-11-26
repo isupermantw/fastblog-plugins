@@ -1,0 +1,128 @@
+{
+	"$schema": "../../node_modules/@emdash-cms/plugin-cli/schemas/emdash-plugin.schema.json",
+	"slug": "fastblog-i18n-byok",
+	"name": "AI Multilingual Translator (OpenAI BYOK)",
+	"description": "OpenAI BYOK translator for EmDash: lossless PortableText translation, workbench, editor panel, glossary, 6-locale UI & 6 MCP tools.",
+	"publisher": "did:plc:776f7xdpfb7dj5ti2l3au3ga",
+	"license": "MIT",
+	"author": {
+		"name": "FastBlog Team",
+		"url": "https://fastblog.cc"
+	},
+	"security": {
+		"email": "security@fastblog.cc"
+	},
+	"repo": "https://github.com/isupermantw/fastblog-plugins",
+	"keywords": [
+		"i18n",
+		"translation",
+		"openai",
+		"byok",
+		"mcp"
+	],
+	"capabilities": [
+		"content:read",
+		"content:write",
+		"content:publish",
+		"schema:read",
+		"taxonomies:read",
+		"taxonomies:write",
+		"network:request"
+	],
+	"allowedHosts": [
+		"api.openai.com"
+	],
+	"storage": {},
+	"admin": {
+		"pages": [
+			{
+				"path": "/translate",
+				"label": "AI Translator",
+				"icon": "languages"
+			}
+		],
+		"editorPanels": [
+			{
+				"id": "i18n-byok-panel",
+				"title": "AI Translate (BYOK)",
+				"route": "editor-panel",
+				"order": 10,
+				"collections": [
+					"posts",
+					"pages"
+				],
+				"draft": {
+					"read": {
+						"translatable": true
+					}
+				}
+			}
+		],
+		"settingsSchema": {
+			"openaiApiKey": {
+				"type": "secret",
+				"label": "OpenAI API Key (BYOK)",
+				"description": "Encrypted by EmDash host and sent exclusively to api.openai.com."
+			},
+			"model": {
+				"type": "select",
+				"label": "OpenAI Model",
+				"description": "Structured JSON Schema model used for translation.",
+				"default": "gpt-6-luna",
+				"options": [
+					{ "value": "gpt-6-luna", "label": "GPT-6 Luna (Recommended)" },
+					{ "value": "gpt-4o-mini", "label": "GPT-4o mini" },
+					{ "value": "gpt-5-mini", "label": "GPT-5 mini" },
+					{ "value": "gpt-4.1-mini", "label": "GPT-4.1 mini" }
+				]
+			},
+			"customModel": {
+				"type": "string",
+				"label": "Custom OpenAI Model ID (Optional)",
+				"description": "Overrides the dropdown model when set.",
+				"default": ""
+			},
+			"sourceLocale": {
+				"type": "string",
+				"label": "Source Locale Override",
+				"description": "Leave empty to use your EmDash site default locale.",
+				"default": ""
+			},
+			"targetLocales": {
+				"type": "string",
+				"label": "Target Locales (comma-separated)",
+				"description": "Supported codes: zh-TW, zh-CN, en, ja, ko, es, fr, de.",
+				"default": "zh-TW,ja,es"
+			},
+			"tone": {
+				"type": "select",
+				"label": "Translation Tone",
+				"description": "Editorial writing style applied to translated content.",
+				"default": "natural",
+				"options": [
+					{ "value": "natural", "label": "Natural Editorial" },
+					{ "value": "professional", "label": "Professional" },
+					{ "value": "casual", "label": "Casual & Friendly" },
+					{ "value": "technical", "label": "Technical Precision" }
+				]
+			},
+			"autoPublish": {
+				"type": "boolean",
+				"label": "Auto-Publish Translations",
+				"description": "If off (recommended), newly created translations stay as drafts for human review.",
+				"default": false
+			},
+			"reasoningEffort": {
+				"type": "select",
+				"label": "Reasoning Effort (GPT-5/6 Models)",
+				"description": "Use none for fastest low-cost translation.",
+				"default": "none",
+				"options": [
+					{ "value": "none", "label": "None (Fastest & Lowest Cost)" },
+					{ "value": "low", "label": "Low" },
+					{ "value": "medium", "label": "Medium" }
+				]
+			}
+		}
+	}
+}

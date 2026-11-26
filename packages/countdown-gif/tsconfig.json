@@ -11,7 +11,8 @@
     "types": []
   },
   "include": [
-    "src/**/*"
+    "src/**/*",
+    "../../shared/**/*"
   ],
   "exclude": [
     "node_modules",

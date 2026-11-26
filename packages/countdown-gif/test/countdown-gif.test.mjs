@@ -278,3 +278,74 @@ test("Full flow: MCP CRUD -> signed GIF89a (active/expired/pill) -> Evergreen 30
 	);
 	assert.equal(deleted.deleted, true);
 });
+
+test("6-locale UI switching, 4-in-1 BlockGuideKit wizard, and empty-state demo timer", async () => {
+	const { COUNTDOWN_MESSAGES } = await import("../src/i18n-messages.ts").catch(() => ({ COUNTDOWN_MESSAGES: null }));
+	// Check 6-locale parity directly from compiled/TS source
+	const fs = await import("node:fs");
+	const msgSrc = fs.readFileSync(new URL("../src/i18n-messages.ts", import.meta.url), "utf8");
+	for (const loc of ['"zh-TW":', '"zh-CN":', "en:", "ja:", "ko:", "es:"]) {
+		assert.ok(msgSrc.includes(loc), `i18n-messages.ts must define locale ${loc}`);
+	}
+
+	const ctx = createMockContext();
+	const adminHandler = getHandler("admin");
+
+	// Empty state renders create_demo_timer button + checklist + FAQ
+	const emptyLoad = await adminHandler(
+		{
+			input: { type: "page_load", page: "/timers" },
+			ui: { locale: "ja-JP", direction: "ltr", surface: "admin-page" },
+			request: { url: "https://demo.fastblog.cc/_emdash/api/plugins/countdown-gif/admin", method: "POST", headers: {} },
+		},
+		ctx,
+	);
+	const vEmpty = validateBlockResponse(emptyLoad, { pluginPagePaths: ["/timers"] });
+	assert.equal(vEmpty.valid, true, `Empty Block Kit validation errors: ${JSON.stringify(vEmpty.errors)}`);
+	assert.equal(emptyLoad.blocks[0]?.text, "Countdown GIF & エバーグリーンタイマー");
+	assert.ok(emptyLoad.blocks.some((b) => b.block_id === "countdown_empty_state"));
+
+	// Switch locale explicitly to zh-TW
+	const zhLoad = await adminHandler(
+		{
+			input: { type: "block_action", action_id: "set_ui_locale", value: "zh-TW", page: "/timers" },
+			request: { url: "https://demo.fastblog.cc/_emdash/api/plugins/countdown-gif/admin", method: "POST", headers: {} },
+		},
+		ctx,
+	);
+	assert.equal(zhLoad.blocks[0]?.text, "Countdown GIF 與長青倒數計時器");
+	assert.equal(zhLoad.toast?.type, "success");
+
+	// Start 4-step walkthrough -> Next -> Close
+	const step1 = await adminHandler(
+		{
+			input: { type: "block_action", action_id: "guide_start", page: "/timers" },
+			request: { url: "https://demo.fastblog.cc/_emdash/api/plugins/countdown-gif/admin", method: "POST", headers: {} },
+		},
+		ctx,
+	);
+	assert.ok(step1.blocks.some((b) => b.block_id === "guide_wizard_banner" && b.title.includes("1/4")));
+	assert.equal(validateBlockResponse(step1, { pluginPagePaths: ["/timers"] }).valid, true);
+
+	const step2 = await adminHandler(
+		{
+			input: { type: "block_action", action_id: "guide_next", page: "/timers" },
+			request: { url: "https://demo.fastblog.cc/_emdash/api/plugins/countdown-gif/admin", method: "POST", headers: {} },
+		},
+		ctx,
+	);
+	assert.ok(step2.blocks.some((b) => b.block_id === "guide_wizard_banner" && b.title.includes("2/4")));
+
+	// One-click demo timer creation
+	const demoCreated = await adminHandler(
+		{
+			input: { type: "block_action", action_id: "create_demo_timer", page: "/timers" },
+			request: { url: "https://demo.fastblog.cc/_emdash/api/plugins/countdown-gif/admin", method: "POST", headers: {} },
+		},
+		ctx,
+	);
+	assert.equal(demoCreated.toast?.type, "success");
+	assert.equal(validateBlockResponse(demoCreated, { pluginPagePaths: ["/timers"] }).valid, true);
+	const savedDemo = await ctx.kv.get("timer:demo-launch-72h");
+	assert.ok(savedDemo && savedDemo.id === "demo-launch-72h");
+});

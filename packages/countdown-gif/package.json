@@ -1,6 +1,6 @@
 {
   "name": "@fastblog/countdown-gif",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Free animated GIF countdown timers for newsletters, Evergreen deadline redirects, and AI MCP tools for EmDash CMS.",
   "license": "MIT",
   "type": "module",

@@ -1,0 +1,39 @@
+{
+  "name": "@fastblog/i18n-byok",
+  "version": "0.1.0",
+  "description": "AI Multilingual Translator (OpenAI BYOK) for EmDash CMS: PortableText AST preservation, /translate Workbench, Editor Panel, Glossary, Taxonomy Translation & 6 MCP tools.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "types": "./dist/index.d.mts"
+    },
+    "./sandbox": "./dist/plugin.mjs"
+  },
+  "files": [
+    "dist",
+    "emdash-plugin.jsonc"
+  ],
+  "scripts": {
+    "validate": "emdash-plugin validate",
+    "build": "emdash-plugin build",
+    "bundle": "emdash-plugin bundle",
+    "typecheck": "tsc --noEmit",
+    "test": "emdash-plugin build && node --test test/fastblog-i18n-byok.test.mjs"
+  },
+  "peerDependencies": {
+    "emdash": ">=1.0.0"
+  },
+  "dependencies": {
+    "@emdash-cms/blocks": "^1.6.0"
+  },
+  "devDependencies": {
+    "@emdash-cms/plugin-cli": "0.13.7",
+    "@emdash-cms/plugin-types": "^0.6.1",
+    "emdash": "^1.5.0",
+    "typescript": "^5.8.2",
+    "zod": "^4.0.0"
+  }
+}
